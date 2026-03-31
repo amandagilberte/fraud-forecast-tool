@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Fraud Losses Forecast</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+  <script src="config.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f9f9f9; color: #111; }
+    #root { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
+    input, select, button { font-family: inherit; font-size: 13px; }
+    input, select { background: #fff; border: 0.5px solid #C490E4; border-radius: 8px; padding: 6px 10px; color: #111; outline: none; }
+    input:focus, select:focus { border-color: #820AD1; }
+    button { cursor: pointer; border-radius: 8px; }
+    code { font-family: monospace; font-size: 12px; background: #f0e8fa; padding: 1px 5px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo, useRef, useEffect } = React;
+const { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid, ReferenceLine } = Recharts;
+
+// ─── CONFIG ────────────────────────────────────────────────────
+const API_BASE       = "";
+const TEAM_PASSWORD  = window._TEAM_PWD  || "equipe";
+const ADMIN_PASSWORD = window._ADMIN_PWD || "admin";
+// ──────────────────────────────────────────────────────────────
+
+const COUNTRIES = ["Brazil","Mexico","Colombia","US"];
+const PRODUCTS = ["Credit Card PF","NuConta PF","Lending PF","NuConta PJ","Investments PF","Credit Card PJ","Payments PJ","Lending PJ"];
+const FRAUD_TYPES = ["Identity","Scam","ATO","Theft","Coercion","CSI","Mule Accounts","Chargeback Losses","Chargeback Gamers"];
+const ALL_MONTHS = [];
+for (let y=24;y<=27;y++) ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"].forEach(m=>ALL_MONTHS.push(`${m}-${y}`));
+const METRICS = ["Losses Actuals","Driver Amount","Ratio Forecast","Include in Baseline","Avg Numerator","Initiatives Impact","Ratio Final","Losses Forecast"];
+const TABS = ["Data Upload","Initiatives","Forecast Table","Dashboard","Export"];
+const yearGroups=[{year:"2024",startIdx:0,count:12},{year:"2025",startIdx:12,count:12},{year:"2026",startIdx:24,count:12},{year:"2027",startIdx:36,count:12}];
+const NU={purple:"#820AD1",purpleD:"#5C0A99",purpleL:"#C490E4",purpleBg:"#F7F0FC",purpleXL:"#EDE0F7",green:"#2e7d32",red:"#e53935"};
+const fmt=(v,d=2)=>(v==null||isNaN(v))?"-":Number(v).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
+const fmtPct=v=>(v==null||isNaN(v))?"-":(Number(v)*100).toFixed(4)+"%";
+const fmtPctShort=v=>(v==null||isNaN(v))?"-":(Number(v)*100).toFixed(2)+"%";
+const sel={background:"#fff",border:`0.5px solid ${NU.purpleL}`,borderRadius:8,padding:"6px 10px",fontSize:13,color:"#111",outline:"none"};
+const nuBtn={fontSize:12,padding:"6px 16px",background:NU.purple,color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:500};
+const nuBtnOut={fontSize:12,padding:"5px 14px",background:"transparent",color:NU.purple,border:`0.5px solid ${NU.purple}`,borderRadius:8,cursor:"pointer",fontWeight:500};
+
+function computeEngine({rawData,firstForecastIdx,includeBaseline,defaultBaselineMonths,initiatives}){
+  const getCell=(c,p,f,m)=>rawData.find(r=>r.country===c&&r.product===p&&r.fraudType===f&&r.month===m);
+  const isIncluded=(c,p,f,m)=>{
+    if(ALL_MONTHS.indexOf(m)>=firstForecastIdx)return false;
+    const k=`${c}||${p}||${f}||${m}`;
+    return includeBaseline[k]!==undefined?includeBaseline[k]:defaultBaselineMonths.has(m);
+  };
+  const getInitImpact=(c,p,f,m)=>initiatives.reduce((acc,i)=>{
+    if(i.country===c&&i.product===p&&i.fraudType===f){const v=i.impacts[m];if(v!=null&&!isNaN(v))return acc*(1+v/100);}return acc;
+  },1);
+  const cache={};
+  const build=(c,p,f)=>{
+    const key=`${c}||${p}||${f}`;
+    if(cache[key])return cache[key];
+    const baseRatios=ALL_MONTHS.slice(0,firstForecastIdx).filter(m=>isIncluded(c,p,f,m)).map(m=>{const cl=getCell(c,p,f,m);return(cl&&cl.driverAmount!==0)?cl.lossesActuals/cl.driverAmount:null;}).filter(v=>v!==null);
+    const avgRatio=baseRatios.length>0?baseRatios.reduce((a,b)=>a+b,0)/baseRatios.length:null;
+    cache[key]=ALL_MONTHS.map(month=>{
+      const isForecast=ALL_MONTHS.indexOf(month)>=firstForecastIdx;
+      const cell=getCell(c,p,f,month);
+      const lossesActuals=cell?cell.lossesActuals:null;
+      const driverAmount=cell?cell.driverAmount:null;
+      const ratioForecast=isForecast?avgRatio:(cell&&cell.driverAmount!==0?cell.lossesActuals/cell.driverAmount:null);
+      const included=isIncluded(c,p,f,month);
+      const avgNum=!isForecast&&included?1:0;
+      const initImpact=getInitImpact(c,p,f,month);
+      const ratioFinal=ratioForecast!==null?ratioForecast*initImpact:null;
+      const lossesForecast=ratioFinal!==null&&driverAmount!==null?ratioFinal*driverAmount:null;
+      return{month,isForecast,lossesActuals,driverAmount,ratioForecast,included,avgNum,initImpact,ratioFinal,lossesForecast};
+    });
+    return cache[key];
+  };
+  return{build,isIncluded};
+}
+
+function LoginScreen({onLogin,loading}){
+  const [pw,setPw]=useState("");
+  const [name,setName]=useState("");
+  const [err,setErr]=useState("");
+  const submit=()=>{
+    if(!name.trim()){setErr("Informe seu nome.");return;}
+    if(pw===ADMIN_PASSWORD){onLogin(name.trim(),"admin");return;}
+    if(pw===TEAM_PASSWORD){onLogin(name.trim(),"user");return;}
+    setErr("Senha incorreta.");
+  };
+  return(
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#f9f9f9"}}>
+      <div style={{width:340,border:`1px solid ${NU.purpleL}`,borderRadius:12,padding:"2rem",background:"#fff",boxShadow:"0 2px 16px #C490E422"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:"1.5rem"}}>
+          <svg width="36" height="36" viewBox="0 0 40 40"><rect width="40" height="40" rx="8" fill={NU.purple}/><text x="50%" y="56%" dominantBaseline="middle" textAnchor="middle" fill="white" fontSize="22" fontWeight="700" fontFamily="sans-serif">N</text></svg>
+          <div><div style={{fontSize:17,fontWeight:500,color:NU.purpleD}}>Fraud Losses Forecast</div><div style={{fontSize:11,color:"#666"}}>Faça login para continuar</div></div>
+        </div>
+        <div style={{marginBottom:10}}><div style={{fontSize:11,color:NU.purple,marginBottom:3}}>Seu nome</div>
+          <input value={name} onChange={e=>{setName(e.target.value);setErr("");}} onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="Ex: Ana Silva" style={{...sel,width:"100%"}}/></div>
+        <div style={{marginBottom:16}}><div style={{fontSize:11,color:NU.purple,marginBottom:3}}>Senha de acesso</div>
+          <input type="password" value={pw} onChange={e=>{setPw(e.target.value);setErr("");}} onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="Senha da equipe ou admin" style={{...sel,width:"100%"}}/></div>
+        {err&&<div style={{fontSize:12,color:NU.red,marginBottom:10}}>{err}</div>}
+        <button onClick={submit} disabled={loading} style={{...nuBtn,width:"100%",padding:"10px",fontSize:14,opacity:loading?0.7:1}}>{loading?"Carregando dados...":"Entrar"}</button>
+        <div style={{fontSize:11,color:"#999",marginTop:12,textAlign:"center"}}>Senha da equipe: acesso geral · Admin: acesso completo</div>
+      </div>
+    </div>
+  );
+}
+
+function App(){
+  const [session,setSession]=useState(null);
+  const [loginLoading,setLoginLoading]=useState(false);
+  const [rawData,setRawDataS]=useState([]);
+  const [firstForecastMonth,setFirstForecastMonthS]=useState("Jul-25");
+  const [initiatives,setInitiativesS]=useState([]);
+  const [includeBaseline,setIncludeBaselineS]=useState({});
+  const [saveStatus,setSaveStatus]=useState("");
+  const [activeTab,setActiveTab]=useState(0);
+  const [uploadError,setUploadError]=useState("");
+  const fileRef=useRef();
+  const saveTimer=useRef(null);
+  const [initName,setInitName]=useState("Nova Iniciativa");
+  const [initCountry,setInitCountry]=useState("Brazil");
+  const [initProduct,setInitProduct]=useState("Credit Card PF");
+  const [initFraud,setInitFraud]=useState("Identity");
+  const [editingInit,setEditingInit]=useState(null);
+  const [filterCountry,setFilterCountry]=useState("Brazil");
+  const [filterProduct,setFilterProduct]=useState("Credit Card PF");
+  const [filterFraud,setFilterFraud]=useState("Identity");
+  const [visibleMetrics,setVisibleMetrics]=useState(new Set(METRICS));
+  const [exportSubTab,setExportSubTab]=useState(0);
+  const [dashCountry,setDashCountry]=useState("Brazil");
+  const [dashProduct,setDashProduct]=useState("Credit Card PF");
+  const [dashFraud,setDashFraud]=useState("Identity");
+  const [showAdminModal,setShowAdminModal]=useState(false);
+  const [adminPwInput,setAdminPwInput]=useState("");
+  const [adminPwErr,setAdminPwErr]=useState(false);
+  const isAdmin=session?.role==="admin";
+
+  const handleLogin=async(name,role)=>{
+    setLoginLoading(true);
+    try{
+      const res=await fetch(`${API_BASE}/api/state`);
+      const s=await res.json();
+      if(s.rawData)            setRawDataS(s.rawData);
+      if(s.firstForecastMonth) setFirstForecastMonthS(s.firstForecastMonth);
+      if(s.initiatives)        setInitiativesS(s.initiatives);
+      if(s.includeBaseline)    setIncludeBaselineS(s.includeBaseline);
+    }catch(e){console.error("Erro ao carregar:",e);}
+    setSession({name,role});
+    setLoginLoading(false);
+  };
+
+  const persist=async(patch)=>{
+    if(saveTimer.current)clearTimeout(saveTimer.current);
+    setSaveStatus("saving");
+    saveTimer.current=setTimeout(async()=>{
+      try{
+        const state={rawData,firstForecastMonth,initiatives,includeBaseline,...patch};
+        const res=await fetch(`${API_BASE}/api/state`,{
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({data:state})
+        });
+        const json=await res.json();
+        if(json.ok){setSaveStatus("saved");setTimeout(()=>setSaveStatus(""),2500);}
+        else setSaveStatus("error");
+      }catch(e){setSaveStatus("error");console.error(e);}
+    },800);
+  };
+
+  const setRawData=v=>{setRawDataS(v);persist({rawData:v});};
+  const setFirstForecastMonth=v=>{setFirstForecastMonthS(v);persist({firstForecastMonth:v});};
+  const setInitiatives=fn=>{setInitiativesS(prev=>{const next=typeof fn==="function"?fn(prev):fn;persist({initiatives:next});return next;});};
+  const setIncludeBaseline=fn=>{setIncludeBaselineS(prev=>{const next=typeof fn==="function"?fn(prev):fn;persist({includeBaseline:next});return next;});};
+
+  const firstForecastIdx=useMemo(()=>ALL_MONTHS.indexOf(firstForecastMonth),[firstForecastMonth]);
+  const forecastMonths=useMemo(()=>ALL_MONTHS.slice(firstForecastIdx),[firstForecastIdx]);
+  const defaultBaselineMonths=useMemo(()=>{const s=Math.max(0,firstForecastIdx-12);return new Set(ALL_MONTHS.slice(s,firstForecastIdx));},[firstForecastIdx]);
+  const engine=useMemo(()=>computeEngine({rawData,firstForecastIdx,includeBaseline,defaultBaselineMonths,initiatives}),[rawData,firstForecastIdx,includeBaseline,defaultBaselineMonths,initiatives]);
+  const monthData=useMemo(()=>engine.build(filterCountry,filterProduct,filterFraud),[engine,filterCountry,filterProduct,filterFraud]);
+  const dashData=useMemo(()=>engine.build(dashCountry,dashProduct,dashFraud),[engine,dashCountry,dashProduct,dashFraud]);
+  const getDriverName=(c,p,f)=>{const r=rawData.find(r=>r.country===c&&r.product===p&&r.fraudType===f);return r?r.driverName:"-";};
+  const countIncluded=(c,p,f)=>ALL_MONTHS.slice(0,firstForecastIdx).filter(m=>engine.isIncluded(c,p,f,m)).length;
+  const toggleInclude=(c,p,f,m)=>{const on=engine.isIncluded(c,p,f,m);if(!on&&countIncluded(c,p,f)>=12)return;setIncludeBaseline(prev=>({...prev,[`${c}||${p}||${f}||${m}`]:!on}));};
+
+  const parseCSV=text=>{
+    const lines=text.trim().split(/\r?\n/);if(lines.length<2)return null;
+    const sep=lines[0].includes("\t")?"\t":",";
+    const headers=lines[0].split(sep).map(h=>h.trim().toLowerCase().replace(/\s+/g,"_").replace(/[^a-z0-9_]/g,""));
+    return{headers,rows:lines.slice(1).map(line=>{const vals=line.split(sep);const row={};headers.forEach((h,j)=>{row[h]=(vals[j]||"").trim();});return row;})};
+  };
+  const handleFile=async e=>{
+    const file=e.target.files[0];if(!file)return;setUploadError("");
+    if(["xlsx","xls"].includes(file.name.split(".").pop().toLowerCase())){setUploadError("Para Excel, exporte como CSV primeiro.");return;}
+    const parsed=parseCSV(await file.text());
+    if(!parsed){setUploadError("Não foi possível ler.");return;}
+    const missing=["country","product","fraud_type","driver_name","month","losses_actuals","driver_amount"].filter(r=>!parsed.headers.includes(r));
+    if(missing.length>0){setUploadError(`Colunas não encontradas: ${missing.join(", ")}`);return;}
+    const norm=m=>m?m.trim().replace(/\s+/g,"-"):m;
+    setRawData(parsed.rows.map(r=>({country:r.country,product:r.product,fraudType:r.fraud_type,driverName:r.driver_name,month:norm(r.month),lossesActuals:parseFloat(r.losses_actuals)||0,driverAmount:parseFloat(r.driver_amount)||0})));
+    setIncludeBaseline({});
+  };
+
+  const fyData=useMemo(()=>[24,25,26,27].map(y=>{
+    const months=ALL_MONTHS.filter(m=>m.endsWith(`-${y}`));
+    const rows=dashData.filter(d=>months.includes(d.month));
+    const tL=rows.reduce((s,r)=>s+(r.isForecast?r.lossesForecast??0:r.lossesActuals??0),0);
+    const tD=rows.reduce((s,r)=>s+(r.driverAmount??0),0);
+    const rf=rows.map(r=>r.ratioForecast).filter(v=>v!=null);
+    const rn=rows.map(r=>r.ratioFinal).filter(v=>v!=null);
+    return{fy:`FY${y}`,totalLosses:tL,totalDriver:tD,avgRatioForecast:rf.length?rf.reduce((a,b)=>a+b,0)/rf.length:null,avgRatioFinal:rn.length?rn.reduce((a,b)=>a+b,0)/rn.length:null};
+  }),[dashData]);
+
+  const dlCSV=(filename,headers,rows)=>{const csv=[headers,...rows].map(r=>r.map(v=>`"${String(v??'').replace(/"/g,'""')}"`).join(",")).join("\n");const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download=filename;a.click();};
+  const exportForecast=()=>{const h=["Country","Product","Fraud Type","Driver Name","Month","Type","Losses Actuals","Driver Amount","Ratio Forecast","Include in Baseline","Avg Numerator","Initiatives Impact","Ratio Final","Losses Forecast"];const rows=[];COUNTRIES.forEach(c=>PRODUCTS.forEach(p=>FRAUD_TYPES.forEach(f=>{engine.build(c,p,f).forEach(r=>rows.push([c,p,f,getDriverName(c,p,f),r.month,r.isForecast?"Forecast":"Actual",r.lossesActuals??"",r.driverAmount??"",r.ratioForecast??"",r.included?"TRUE":"FALSE",r.avgNum,r.initImpact,r.ratioFinal??"",r.lossesForecast??""]));})));dlCSV("fraud_forecast_output.csv",h,rows);};
+  const exportInitiatives=()=>dlCSV("fraud_initiatives.csv",["Country","Product","Fraud Type","Initiative Name",...forecastMonths],initiatives.map(i=>[i.country,i.product,i.fraudType,i.name,...forecastMonths.map(m=>{const v=i.impacts[m];return(v!=null&&!isNaN(v))?v:0;})]));
+  const exportBaseline=()=>{const actuals=ALL_MONTHS.slice(0,firstForecastIdx);const rows=[];COUNTRIES.forEach(c=>PRODUCTS.forEach(p=>FRAUD_TYPES.forEach(f=>rows.push([c,p,f,...actuals.map(m=>engine.isIncluded(c,p,f,m)?"TRUE":"FALSE")]))));dlCSV("fraud_baseline_flags.csv",["Country","Product","Fraud Type",...actuals],rows);};
+
+  const thSt=(fc=false)=>({padding:"5px 8px",fontWeight:500,fontSize:11,color:fc?NU.purple:"#666",borderBottom:`0.5px solid ${fc?NU.purpleL:"#ddd"}`,borderRight:"0.5px solid #eee",background:fc?NU.purpleBg:"#f9f9f9",whiteSpace:"nowrap",textAlign:"center",position:"sticky",top:0,zIndex:1,minWidth:68});
+  const tdSt=(fc=false)=>({padding:"4px 8px",fontSize:11,textAlign:"center",borderBottom:"0.5px solid #eee",borderRight:"0.5px solid #eee",background:fc?NU.purpleBg+"88":"transparent",whiteSpace:"nowrap"});
+  const stickyLbl={padding:"5px 10px",fontSize:11,fontWeight:500,borderBottom:"0.5px solid #eee",borderRight:`1px solid ${NU.purpleL}`,background:"#f9f9f9",whiteSpace:"nowrap",position:"sticky",left:0,zIndex:2,color:"#111"};
+  const yearThSt=(fc=false)=>({padding:"4px 8px",fontWeight:500,fontSize:11,color:fc?NU.purpleD:"#555",borderBottom:"0.5px solid #ddd",borderRight:"0.5px solid #eee",textAlign:"center",background:fc?NU.purpleXL:"#f4f4f4"});
+  const ttip=({active,payload,label})=>{if(!active||!payload?.length)return null;return(<div style={{background:"#fff",border:`0.5px solid ${NU.purpleL}`,borderRadius:8,padding:"8px 12px",fontSize:11}}><div style={{fontWeight:500,marginBottom:4,color:NU.purpleD}}>{label}</div>{payload.map((p,i)=><div key={i} style={{color:p.color}}>{p.name}: {typeof p.value==="number"?p.value.toLocaleString("en-US",{maximumFractionDigits:4}):p.value}</div>)}</div>);};
+  const FilterRow=({c,setC,p,setP,f,setF})=>(<div style={{display:"flex",gap:8,marginBottom:"0.75rem",flexWrap:"wrap",alignItems:"flex-end"}}>{[["País",COUNTRIES,c,setC],["Produto",PRODUCTS,p,setP],["Fraud Type",FRAUD_TYPES,f,setF]].map(([label,opts,val,set])=>(<div key={label}><div style={{fontSize:11,color:NU.purple,marginBottom:3}}>{label}</div><select style={sel} value={val} onChange={e=>set(e.target.value)}>{opts.map(o=><option key={o}>{o}</option>)}</select></div>))}</div>);
+
+  if(!session) return <LoginScreen onLogin={handleLogin} loading={loginLoading}/>;
+  const includedCount=countIncluded(filterCountry,filterProduct,filterFraud);
+
+  return(
+    <div style={{fontFamily:"-apple-system,sans-serif",padding:"1rem 0"}}>
+      {showAdminModal&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
+          <div style={{background:"#fff",borderRadius:12,padding:"1.5rem",width:320,border:`1px solid ${NU.purpleL}`}}>
+            <div style={{fontSize:15,fontWeight:500,marginBottom:8,color:NU.purpleD}}>Acesso admin necessário</div>
+            <input type="password" value={adminPwInput} onChange={e=>{setAdminPwInput(e.target.value);setAdminPwErr(false);}} onKeyDown={e=>{if(e.key==="Enter"){if(adminPwInput===ADMIN_PASSWORD){setSession(s=>({...s,role:"admin"}));setShowAdminModal(false);setAdminPwInput("");}else setAdminPwErr(true);}}} style={{...sel,width:"100%",marginBottom:6}} placeholder="Senha admin" autoFocus/>
+            {adminPwErr&&<div style={{fontSize:11,color:NU.red,marginBottom:8}}>Senha incorreta.</div>}
+            <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:8}}>
+              <button onClick={()=>{setShowAdminModal(false);setAdminPwInput("");setAdminPwErr(false);}} style={nuBtnOut}>Cancelar</button>
+              <button onClick={()=>{if(adminPwInput===ADMIN_PASSWORD){setSession(s=>({...s,role:"admin"}));setShowAdminModal(false);setAdminPwInput("");}else setAdminPwErr(true);}} style={nuBtn}>Confirmar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1rem",flexWrap:"wrap",gap:8}}>
+        <div>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:3}}>
+            <svg width="28" height="28" viewBox="0 0 40 40"><rect width="40" height="40" rx="8" fill={NU.purple}/><text x="50%" y="56%" dominantBaseline="middle" textAnchor="middle" fill="white" fontSize="22" fontWeight="700" fontFamily="sans-serif">N</text></svg>
+            <h2 style={{margin:0,fontSize:20,fontWeight:500,color:NU.purpleD}}>Fraud Losses Forecast</h2>
+          </div>
+          <p style={{margin:0,fontSize:12,color:"#666"}}>Forecast por país, produto e tipo de fraude · Jan-24 a Dez-27</p>
+        </div>
+        <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:11,padding:"3px 10px",borderRadius:20,background:isAdmin?NU.purple:NU.purpleBg,color:isAdmin?"#fff":NU.purple,border:`0.5px solid ${NU.purpleL}`,fontWeight:500}}>{isAdmin?"👑":"👤"} {session.name}</span>
+            <button onClick={()=>setSession(null)} style={{...nuBtnOut,fontSize:11,padding:"3px 10px"}}>Sair</button>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:8,padding:"6px 12px",background:NU.purpleBg,borderRadius:8,border:`0.5px solid ${NU.purpleL}`}}>
+            <span style={{fontSize:12,color:NU.purpleD,fontWeight:500}}>Primeiro mês de forecast:</span>
+            {isAdmin?(<select style={{...sel,border:`0.5px solid ${NU.purple}`}} value={firstForecastMonth} onChange={e=>setFirstForecastMonth(e.target.value)}>{ALL_MONTHS.map(m=><option key={m}>{m}</option>)}</select>):(
+              <><span style={{fontSize:13,fontWeight:500,color:NU.purple,padding:"4px 10px",background:"#fff",borderRadius:8,border:`0.5px solid ${NU.purpleL}`}}>{firstForecastMonth}</span>
+              <button onClick={()=>setShowAdminModal(true)} style={{...nuBtnOut,fontSize:11,padding:"3px 10px"}}>🔒 Admin</button></>
+            )}
+            <span style={{fontSize:11,color:"#999"}}>{firstForecastIdx}a·{ALL_MONTHS.length-firstForecastIdx}f</span>
+            {saveStatus==="saving"&&<span style={{fontSize:10,color:NU.purpleL}}>💾…</span>}
+            {saveStatus==="saved"&&<span style={{fontSize:10,color:NU.green}}>✓ salvo</span>}
+            {saveStatus==="error"&&<span style={{fontSize:10,color:NU.red}}>⚠ erro</span>}
+          </div>
+        </div>
+      </div>
+
+      <div style={{display:"flex",gap:0,borderBottom:`2px solid ${NU.purpleXL}`,marginBottom:"1.25rem"}}>
+        {TABS.map((t,i)=><button key={t} onClick={()=>setActiveTab(i)} style={{background:"none",border:"none",borderBottom:activeTab===i?`2px solid ${NU.purple}`:"2px solid transparent",marginBottom:-2,padding:"8px 16px",fontSize:13,fontWeight:activeTab===i?500:400,color:activeTab===i?NU.purple:"#666",cursor:"pointer"}}>{t}</button>)}
+      </div>
+
+      {activeTab===0&&(<div>
+        <h3 style={{fontSize:14,fontWeight:500,margin:"0 0 5px",color:NU.purpleD}}>Upload de dados (CSV)</h3>
+        {!isAdmin&&<div style={{fontSize:12,color:NU.red,padding:"8px 12px",background:"#fff3f3",border:`0.5px solid ${NU.red}`,borderRadius:8,marginBottom:10}}>⚠ Apenas administradores podem fazer upload.</div>}
+        <p style={{fontSize:12,color:"#666",margin:"0 0 3px"}}>Colunas: <code>country</code>, <code>product</code>, <code>fraud_type</code>, <code>driver_name</code>, <code>month</code>, <code>losses_actuals</code>, <code>driver_amount</code></p>
+        <p style={{fontSize:11,color:"#999",margin:"0 0 10px"}}>Formato de mês: Jan-24 ou Jan 24.</p>
+        {isAdmin&&<input ref={fileRef} type="file" accept=".csv,.tsv,.txt" onChange={handleFile} style={{fontSize:13,marginBottom:8}}/>}
+        {uploadError&&<p style={{fontSize:12,color:NU.red,marginTop:6}}>{uploadError}</p>}
+        {rawData.length>0?(<div style={{marginTop:"1rem"}}>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))",gap:8,marginBottom:"1rem"}}>
+            {[["Registros",rawData.length],["Países",[...new Set(rawData.map(r=>r.country))].length],["Produtos",[...new Set(rawData.map(r=>r.product))].length],["Tipos",[...new Set(rawData.map(r=>r.fraudType))].length]].map(([l,v])=>(
+              <div key={l} style={{background:NU.purpleBg,borderRadius:8,padding:"8px 12px",border:`0.5px solid ${NU.purpleXL}`}}><div style={{fontSize:11,color:NU.purple,marginBottom:2}}>{l}</div><div style={{fontSize:20,fontWeight:500,color:NU.purpleD}}>{v}</div></div>
+            ))}
+          </div>
+          <div style={{overflowX:"auto",maxHeight:280,border:`0.5px solid ${NU.purpleL}`,borderRadius:8}}>
+            <table style={{width:"100%",fontSize:11,borderCollapse:"collapse",tableLayout:"fixed"}}>
+              <thead><tr style={{background:NU.purpleBg}}>{["Country","Product","Fraud Type","Driver Name","Month","Losses Actuals","Driver Amount"].map(h=><th key={h} style={{padding:"5px 8px",textAlign:"left",fontWeight:500,color:NU.purple,borderBottom:`0.5px solid ${NU.purpleL}`,whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
+              <tbody>{rawData.slice(0,200).map((r,i)=><tr key={i} style={{borderBottom:"0.5px solid #eee"}}><td style={{padding:"4px 8px"}}>{r.country}</td><td style={{padding:"4px 8px"}}>{r.product}</td><td style={{padding:"4px 8px"}}>{r.fraudType}</td><td style={{padding:"4px 8px"}}>{r.driverName}</td><td style={{padding:"4px 8px"}}>{r.month}</td><td style={{padding:"4px 8px",textAlign:"right"}}>{fmt(r.lossesActuals)}</td><td style={{padding:"4px 8px",textAlign:"right"}}>{fmt(r.driverAmount)}</td></tr>)}</tbody>
+            </table>
+          </div>
+        </div>):(<div style={{marginTop:"1rem",border:`1px dashed ${NU.purpleL}`,borderRadius:12,padding:"2rem",textAlign:"center",color:NU.purple,fontSize:13,background:NU.purpleBg}}>Nenhum dado carregado ainda.</div>)}
+      </div>)}
+
+      {activeTab===1&&(<div>
+        <h3 style={{fontSize:14,fontWeight:500,margin:"0 0 5px",color:NU.purpleD}}>Cadastro de iniciativas</h3>
+        <p style={{fontSize:12,color:"#666",margin:"0 0 12px"}}>Impacto (%) nos meses de forecast, por País × Produto × Fraud Type.</p>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"flex-end",marginBottom:10,padding:"10px 12px",background:NU.purpleBg,borderRadius:8,border:`0.5px solid ${NU.purpleXL}`}}>
+          <div><div style={{fontSize:11,color:NU.purple,marginBottom:3}}>Nome</div><input value={initName} onChange={e=>setInitName(e.target.value)} style={{...sel,width:160}}/></div>
+          {[["País",COUNTRIES,initCountry,setInitCountry],["Produto",PRODUCTS,initProduct,setInitProduct],["Fraud Type",FRAUD_TYPES,initFraud,setInitFraud]].map(([label,opts,val,set])=>(<div key={label}><div style={{fontSize:11,color:NU.purple,marginBottom:3}}>{label}</div><select style={sel} value={val} onChange={e=>set(e.target.value)}>{opts.map(o=><option key={o}>{o}</option>)}</select></div>))}
+          <button onClick={()=>{const id=Date.now();setInitiatives(prev=>[...prev,{id,name:initName,country:initCountry,product:initProduct,fraudType:initFraud,impacts:{}}]);setEditingInit(id);}} style={nuBtn}>+ Adicionar</button>
+        </div>
+        {initiatives.length===0?(<div style={{fontSize:12,color:NU.purple,padding:"1rem",background:NU.purpleBg,borderRadius:8}}>Nenhuma iniciativa cadastrada.</div>):(<div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>{initiatives.map(init=><button key={init.id} onClick={()=>setEditingInit(editingInit===init.id?null:init.id)} style={{fontSize:11,padding:"4px 14px",borderRadius:20,cursor:"pointer",background:editingInit===init.id?NU.purple:"transparent",border:`0.5px solid ${NU.purple}`,color:editingInit===init.id?"#fff":NU.purple,fontWeight:editingInit===init.id?500:400}}>{init.name}</button>)}</div>
+          {initiatives.map(init=>editingInit===init.id&&(<div key={init.id} style={{border:`0.5px solid ${NU.purpleL}`,borderRadius:8,overflow:"hidden",marginBottom:12}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",background:NU.purpleBg,borderBottom:`0.5px solid ${NU.purpleL}`}}>
+              <div style={{fontSize:12,fontWeight:500,color:NU.purpleD}}>{init.name}</div>
+              <div style={{display:"flex",gap:12,alignItems:"center",fontSize:11,color:NU.purple}}>
+                <span>{init.country} · {init.product} · {init.fraudType}</span>
+                <button onClick={()=>{setInitiatives(prev=>prev.filter(i=>i.id!==init.id));setEditingInit(null);}} style={{fontSize:11,padding:"2px 8px",color:NU.red,background:"transparent",border:`0.5px solid ${NU.red}`,borderRadius:4,cursor:"pointer"}}>Remover</button>
+              </div>
+            </div>
+            <div style={{overflowX:"auto"}}>
+              <table style={{borderCollapse:"collapse",fontSize:11}}>
+                <thead>
+                  <tr><th style={{...stickyLbl,position:"sticky",top:0,zIndex:3,background:NU.purpleBg,color:NU.purple}}>Impacto (%)</th>{yearGroups.filter(g=>(g.startIdx+g.count)>firstForecastIdx).map(({year,startIdx,count})=>{const vs=Math.max(startIdx,firstForecastIdx);const vc=Math.min(startIdx+count,ALL_MONTHS.length)-vs;return <th key={year} colSpan={vc} style={yearThSt(true)}>{year}</th>;})}</tr>
+                  <tr><th style={{...stickyLbl,top:24,zIndex:3,background:NU.purpleBg,color:NU.purple}}></th>{forecastMonths.map(m=><th key={m} style={thSt(true)}>{m.split("-")[0]}</th>)}</tr>
+                </thead>
+                <tbody>
+                  <tr><td style={{...stickyLbl,background:NU.purpleBg,color:NU.purple}}>% impacto</td>{forecastMonths.map(m=>{const val=init.impacts[m];return(<td key={m} style={{...tdSt(true),padding:"3px 4px"}}><input type="number" step="0.01" value={val??""} placeholder="0" onChange={e=>{const v=e.target.value;setInitiatives(prev=>prev.map(i=>i.id===init.id?{...i,impacts:{...i.impacts,[m]:v===""?null:parseFloat(v)}}:i));}} style={{width:60,fontSize:11,padding:"2px 4px",textAlign:"right",background:"transparent",border:`0.5px solid ${NU.purpleL}`,borderRadius:4,color:"#111"}}/></td>);})}</tr>
+                  <tr><td style={{...stickyLbl,color:NU.purple,fontWeight:400,background:"#f9f9f9"}}>Multiplicador</td>{forecastMonths.map(m=>{const v=init.impacts[m];const mult=v!=null&&!isNaN(v)?1+v/100:1;return <td key={m} style={{...tdSt(true),color:mult<1?NU.red:mult>1?NU.green:"#aaa"}}>{mult===1?"—":fmt(mult,4)}</td>;})}</tr>
+                </tbody>
+              </table>
+            </div>
+          </div>))}
+          <div style={{marginTop:8,border:`0.5px solid ${NU.purpleL}`,borderRadius:8,overflow:"hidden"}}>
+            <div style={{padding:"6px 12px",background:NU.purpleBg,borderBottom:`0.5px solid ${NU.purpleL}`,fontSize:11,fontWeight:500,color:NU.purple}}>Resumo</div>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+              <thead><tr style={{background:NU.purpleBg}}>{["Nome","País","Produto","Fraud Type","Meses",""].map(h=><th key={h} style={{padding:"5px 10px",textAlign:"left",fontWeight:500,color:NU.purple,borderBottom:`0.5px solid ${NU.purpleXL}`}}>{h}</th>)}</tr></thead>
+              <tbody>{initiatives.map(i=><tr key={i.id} style={{borderBottom:"0.5px solid #eee"}}><td style={{padding:"4px 10px",fontWeight:500,color:NU.purpleD}}>{i.name}</td><td style={{padding:"4px 10px"}}>{i.country}</td><td style={{padding:"4px 10px"}}>{i.product}</td><td style={{padding:"4px 10px"}}>{i.fraudType}</td><td style={{padding:"4px 10px",color:"#666"}}>{Object.values(i.impacts).filter(v=>v!=null&&!isNaN(v)&&v!==0).length}</td><td style={{padding:"4px 10px"}}><button onClick={()=>setEditingInit(i.id)} style={nuBtnOut}>Editar</button></td></tr>)}</tbody>
+            </table>
+          </div>
+        </div>)}
+      </div>)}
+
+      {activeTab===2&&(<div>
+        <FilterRow c={filterCountry} setC={setFilterCountry} p={filterProduct} setP={setFilterProduct} f={filterFraud} setF={setFilterFraud}/>
+        <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:"0.5rem",flexWrap:"wrap"}}>
+          <span style={{fontSize:11,color:"#666"}}>Driver: <strong style={{color:NU.purpleD}}>{getDriverName(filterCountry,filterProduct,filterFraud)}</strong></span>
+          <span style={{fontSize:11,padding:"2px 10px",borderRadius:20,background:includedCount>=12?NU.red:NU.purpleBg,color:includedCount>=12?"#fff":NU.purple,border:`0.5px solid ${includedCount>=12?NU.red:NU.purpleL}`,fontWeight:500}}>{includedCount}/12 meses no baseline</span>
+        </div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:"0.75rem"}}>{METRICS.map(m=><button key={m} onClick={()=>setVisibleMetrics(prev=>{const n=new Set(prev);n.has(m)?n.delete(m):n.add(m);return n;})} style={{fontSize:11,padding:"2px 10px",borderRadius:20,cursor:"pointer",background:visibleMetrics.has(m)?NU.purple:"transparent",border:`0.5px solid ${NU.purple}`,color:visibleMetrics.has(m)?"#fff":NU.purple}}>{m}</button>)}</div>
+        <div style={{overflowX:"auto",border:`0.5px solid ${NU.purpleL}`,borderRadius:8}}>
+          <table style={{borderCollapse:"collapse",fontSize:11}}>
+            <thead>
+              <tr><th style={{...stickyLbl,position:"sticky",top:0,zIndex:3,background:NU.purpleBg,color:NU.purple,fontSize:11}}>Métrica</th>{yearGroups.map(({year,startIdx})=><th key={year} colSpan={12} style={yearThSt(startIdx>=firstForecastIdx)}>{year}</th>)}</tr>
+              <tr><th style={{...stickyLbl,top:24,zIndex:3,background:NU.purpleBg,color:NU.purple}}></th>{ALL_MONTHS.map(m=>{const fc=ALL_MONTHS.indexOf(m)>=firstForecastIdx;return <th key={m} style={thSt(fc)}>{m.split("-")[0]}</th>;})}</tr>
+            </thead>
+            <tbody>{METRICS.filter(m=>visibleMetrics.has(m)).map(metric=>(<tr key={metric}><td style={stickyLbl}>{metric}</td>
+              {monthData.map(({month,isForecast,lossesActuals,driverAmount,ratioForecast,included,avgNum,initImpact,ratioFinal,lossesForecast})=>{
+                const isSug=!isForecast&&defaultBaselineMonths.has(month);
+                let cell;
+                if(metric==="Losses Actuals")cell=lossesActuals!==null?fmt(lossesActuals):"-";
+                else if(metric==="Driver Amount")cell=driverAmount!==null?fmt(driverAmount):"-";
+                else if(metric==="Ratio Forecast")cell=fmtPct(ratioForecast);
+                else if(metric==="Include in Baseline"){const atCap=!included&&includedCount>=12;cell=!isForecast?(<div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:1}}><input type="checkbox" checked={included} onChange={()=>toggleInclude(filterCountry,filterProduct,filterFraud,month)} style={{cursor:atCap?"not-allowed":"pointer",accentColor:NU.purple}} title={atCap?"Máximo de 12 meses":""}/>{isSug&&!included&&<span style={{fontSize:9,color:NU.purpleL}}>sugerido</span>}</div>):<span style={{color:"#aaa"}}>—</span>;}
+                else if(metric==="Avg Numerator")cell=avgNum;
+                else if(metric==="Initiatives Impact")cell=fmt(initImpact,4);
+                else if(metric==="Ratio Final")cell=fmtPct(ratioFinal);
+                else if(metric==="Losses Forecast")cell=lossesForecast!==null?<strong style={{color:NU.purpleD}}>{fmt(lossesForecast)}</strong>:"-";
+                return <td key={month} style={tdSt(isForecast)}>{cell}</td>;
+              })}
+            </tr>))}</tbody>
+          </table>
+        </div>
+      </div>)}
+
+      {activeTab===3&&(<div>
+        <h3 style={{fontSize:14,fontWeight:500,margin:"0 0 10px",color:NU.purpleD}}>Dashboard</h3>
+        <FilterRow c={dashCountry} setC={setDashCountry} p={dashProduct} setP={setDashProduct} f={dashFraud} setF={setDashFraud}/>
+        <div style={{background:"#fff",border:`0.5px solid ${NU.purpleL}`,borderRadius:12,padding:"16px",marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:500,color:NU.purpleD,marginBottom:12}}>Evolução do Driver, Losses e Ratio Final</div>
+          <ResponsiveContainer width="100%" height={240}>
+            <LineChart data={dashData} margin={{top:4,right:16,bottom:4,left:8}}>
+              <CartesianGrid strokeDasharray="3 3" stroke={NU.purpleXL}/>
+              <XAxis dataKey="month" tick={{fontSize:9,fill:NU.purple}} interval={5}/>
+              <YAxis yAxisId="left" tick={{fontSize:9}} tickFormatter={v=>v>=1e6?`${(v/1e6).toFixed(1)}M`:v>=1e3?`${(v/1e3).toFixed(0)}K`:v}/>
+              <YAxis yAxisId="right" orientation="right" tick={{fontSize:9,fill:NU.purple}} tickFormatter={v=>(v*100).toFixed(2)+"%"}/>
+              <Tooltip content={ttip}/><Legend wrapperStyle={{fontSize:11}}/>
+              <ReferenceLine x={firstForecastMonth} yAxisId="left" stroke={NU.purpleL} strokeDasharray="4 2" label={{value:"Forecast",position:"insideTopRight",fontSize:9,fill:NU.purple}}/>
+              <Line yAxisId="left" type="monotone" dataKey="driverAmount" name="Driver Amount" stroke="#888" strokeWidth={1.5} dot={false}/>
+              <Line yAxisId="left" type="monotone" dataKey={d=>d.isForecast?d.lossesForecast:d.lossesActuals} name="Losses" stroke={NU.purpleD} strokeWidth={2} dot={false}/>
+              <Line yAxisId="right" type="monotone" dataKey="ratioFinal" name="Ratio Final" stroke={NU.purple} strokeWidth={1.5} strokeDasharray="5 2" dot={false}/>
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+        <div style={{background:"#fff",border:`0.5px solid ${NU.purpleL}`,borderRadius:12,padding:"16px",marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:500,color:NU.purpleD,marginBottom:12}}>Ratio: com vs sem iniciativas</div>
+          <ResponsiveContainer width="100%" height={200}>
+            <LineChart data={dashData} margin={{top:4,right:16,bottom:4,left:8}}>
+              <CartesianGrid strokeDasharray="3 3" stroke={NU.purpleXL}/>
+              <XAxis dataKey="month" tick={{fontSize:9,fill:NU.purple}} interval={5}/>
+              <YAxis tick={{fontSize:9}} tickFormatter={v=>(v*100).toFixed(2)+"%"}/>
+              <Tooltip content={ttip}/><Legend wrapperStyle={{fontSize:11}}/>
+              <ReferenceLine x={firstForecastMonth} stroke={NU.purpleL} strokeDasharray="4 2"/>
+              <Line type="monotone" dataKey="ratioForecast" name="Ratio s/ iniciativas" stroke={NU.purpleL} strokeWidth={1.5} dot={false}/>
+              <Line type="monotone" dataKey="ratioFinal" name="Ratio c/ iniciativas" stroke={NU.purple} strokeWidth={2} dot={false}/>
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+        <div style={{background:"#fff",border:`0.5px solid ${NU.purpleL}`,borderRadius:12,padding:"16px"}}>
+          <div style={{fontSize:12,fontWeight:500,color:NU.purpleD,marginBottom:12}}>Comparativo por exercício fiscal (FY)</div>
+          <div style={{overflowX:"auto",marginBottom:16}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+              <thead><tr style={{background:NU.purpleBg}}>{["","FY24","FY25","FY26","FY27"].map(h=><th key={h} style={{padding:"6px 12px",textAlign:h===""?"left":"right",fontWeight:500,color:NU.purple,borderBottom:`0.5px solid ${NU.purpleL}`}}>{h}</th>)}</tr></thead>
+              <tbody>{[["Total Losses",fyData.map(d=>d.totalLosses),v=>fmt(v,0)],["Total Driver",fyData.map(d=>d.totalDriver),v=>fmt(v,0)],["Avg Ratio s/ init.",fyData.map(d=>d.avgRatioForecast),fmtPctShort],["Avg Ratio c/ init.",fyData.map(d=>d.avgRatioFinal),fmtPctShort]].map(([label,vals,fn])=>(
+                <tr key={label} style={{borderBottom:"0.5px solid #eee"}}><td style={{padding:"5px 12px",fontWeight:500,color:NU.purpleD}}>{label}</td>{vals.map((v,i)=><td key={i} style={{padding:"5px 12px",textAlign:"right"}}>{fn(v)}</td>)}</tr>
+              ))}</tbody>
+            </table>
+          </div>
+          <ResponsiveContainer width="100%" height={180}>
+            <BarChart data={fyData} margin={{top:4,right:16,bottom:4,left:8}}>
+              <CartesianGrid strokeDasharray="3 3" stroke={NU.purpleXL}/>
+              <XAxis dataKey="fy" tick={{fontSize:11,fill:NU.purple}}/>
+              <YAxis tick={{fontSize:9}} tickFormatter={v=>v>=1e6?`${(v/1e6).toFixed(1)}M`:v>=1e3?`${(v/1e3).toFixed(0)}K`:v}/>
+              <Tooltip content={ttip}/><Legend wrapperStyle={{fontSize:11}}/>
+              <Bar dataKey="totalLosses" name="Total Losses" fill={NU.purple} radius={[3,3,0,0]}/>
+              <Bar dataKey="totalDriver" name="Total Driver" fill={NU.purpleL} radius={[3,3,0,0]}/>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>)}
+
+      {activeTab===4&&(<div>
+        <h3 style={{fontSize:14,fontWeight:500,margin:"0 0 12px",color:NU.purpleD}}>Exportar dados</h3>
+        <div style={{display:"flex",gap:6,marginBottom:16}}>{["Forecast Output","Initiatives","Include in Baseline"].map((t,i)=><button key={t} onClick={()=>setExportSubTab(i)} style={{fontSize:12,padding:"5px 14px",borderRadius:20,cursor:"pointer",background:exportSubTab===i?NU.purple:"transparent",border:`0.5px solid ${NU.purple}`,color:exportSubTab===i?"#fff":NU.purple,fontWeight:exportSubTab===i?500:400}}>{t}</button>)}</div>
+        {exportSubTab===0&&(<div><div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:14}}>{[["Total linhas",(COUNTRIES.length*PRODUCTS.length*FRAUD_TYPES.length*ALL_MONTHS.length).toLocaleString()],["Registros",rawData.length],["Iniciativas",initiatives.length]].map(([l,v])=>(<div key={l} style={{background:NU.purpleBg,borderRadius:8,padding:"8px 12px"}}><div style={{fontSize:11,color:NU.purple,marginBottom:2}}>{l}</div><div style={{fontSize:20,fontWeight:500,color:NU.purpleD}}>{v}</div></div>))}</div><button onClick={exportForecast} style={{...nuBtn,fontSize:13,padding:"9px 24px"}}>Baixar Forecast CSV</button></div>)}
+        {exportSubTab===1&&(<div><div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:8,marginBottom:14}}>{[["Iniciativas",initiatives.length],["Meses forecast",forecastMonths.length]].map(([l,v])=>(<div key={l} style={{background:NU.purpleBg,borderRadius:8,padding:"8px 12px"}}><div style={{fontSize:11,color:NU.purple,marginBottom:2}}>{l}</div><div style={{fontSize:20,fontWeight:500,color:NU.purpleD}}>{v}</div></div>))}</div><button onClick={exportInitiatives} style={{...nuBtn,fontSize:13,padding:"9px 24px"}}>Baixar Initiatives CSV</button></div>)}
+        {exportSubTab===2&&(<div><div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:8,marginBottom:14}}>{[["Combinações",COUNTRIES.length*PRODUCTS.length*FRAUD_TYPES.length],["Meses actuals",firstForecastIdx]].map(([l,v])=>(<div key={l} style={{background:NU.purpleBg,borderRadius:8,padding:"8px 12px"}}><div style={{fontSize:11,color:NU.purple,marginBottom:2}}>{l}</div><div style={{fontSize:20,fontWeight:500,color:NU.purpleD}}>{v}</div></div>))}</div><button onClick={exportBaseline} style={{...nuBtn,fontSize:13,padding:"9px 24px"}}>Baixar Baseline CSV</button></div>)}
+      </div>)}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
